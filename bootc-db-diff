@@ -4,6 +4,7 @@ import subprocess
 import json
 import sys
 
+# TODO: Maybe support package manager auto detection and/or specifying using an environment variable?
 LIST_PACKAGES_COMMAND = "pacman -Q"
 
 STATUS = "status"
@@ -16,6 +17,7 @@ VERITY = "verity"
 VALID_ARGS = [ "", ROLLBACK, STAGED ]
 
 # Tell the user how to use the program and cleanly exit
+# FIXME: use argparse for this
 def print_usage_and_exit(filename):
     print(f"Usage: {filename} [type]\n\ntype:\n    (default): Print diff from booted to staged deployment if it exists, otherwise print diff from rollback to booted deployment\n    rollback: Print diff from rollback to booted deployment\n    staged: Print diff from booted to staged deployment")
     sys.exit()
@@ -96,6 +98,7 @@ def output_package_diff(package_list_new, package_list_old):
             packages_old_version = packages_old_dict[key]
 
         # Check whether the package exists in the old and the new version to decide if it has been removed, added or upgraded
+        # TODO: should handle package downgrades too instead of calling them upgrades
         if packages_new_version is not None and packages_old_version is not None:
             upgradedpackages.append("Upgraded: {package}: {oldversion} -> {newversion}".format(package=key, oldversion=packages_old_version, newversion=packages_old_version))
         elif packages_old_version is None and packages_new_version is not None:

@@ -1,0 +1,185 @@
+#!/usr/bin/env python
+from collections import Counter
+import subprocess
+import json
+import sys
+
+LIST_PACKAGES_COMMAND = "pacman -Q"
+
+STATUS = "status"
+BOOTED = "booted"
+ROLLBACK = "rollback"
+STAGED = "staged"
+COMPOSEFS = "composefs"
+VERITY = "verity"
+
+VALID_ARGS = [ "", ROLLBACK, STAGED ]
+
+# Tell the user how to use the program and cleanly exit
+def print_usage_and_exit(filename):
+    print(f"Usage: {filename} [type]\n\ntype:\n    (default): Print diff from booted to staged deployment if it exists, otherwise print diff from rollback to booted deployment\n    rollback: Print diff from rollback to booted deployment\n    staged: Print diff from booted to staged deployment")
+    sys.exit()
+
+
+# Subtract a list from another using Counters
+def list_subtract(list1, list2):
+    return list((Counter(list1)-Counter(list2)).elements())
+
+
+# Converts a list of packages into a dictionary of [packagename] : [version]
+def package_list_to_dict(packages):
+    dict = {}
+    for package in packages:
+        parts = package.split(' ')
+        # If there are only 2 distinct parts we assume the first is the package name and the second the version
+        if len(parts) == 2:
+            dict[parts[0]] = parts[1]
+        else:
+            print(f"Could not process package: {package}")
+    return dict
+
+
+# Complain about bootc status returning unexpected data
+def invalid_format(status, key):
+    print("Error: output of 'bootc status' was formatted unexpectedly - key \"{key}\" was missing. Output was:\n{status}".format(key=key, status=json.dumps(status, indent=4)))
+    sys.exit()
+
+
+# Deployment does not exist
+def invalid_deployment(deployment_name):
+    print(f"Error: {deployment_name} deployment does not exist")
+
+
+# Get the package list from a composefs deployment
+def get_packages(composefs_details):
+    if VERITY in composefs_details:
+        verity = composefs_details[VERITY]
+        staged_dir = f"/run/media/{verity}"
+
+        # We make the mountpoint, mount using bootc internals cfs mount, and then chroot into it to check the list of installed packages.
+        subprocess.run(f"mkdir -p {staged_dir}", shell=True)
+        subprocess.run(f"bootc internals cfs mount {verity} {staged_dir}", shell=True)
+        packages = subprocess.check_output(f"chroot {staged_dir} {LIST_PACKAGES_COMMAND}", stderr=subprocess.DEVNULL, shell=True).decode("UTF-8")
+        subprocess.run(f"umount {staged_dir}", shell=True)
+        return packages
+
+    else:
+        invalid_format(composefs_details, VERITY)
+
+
+# Actually print out the package diff string
+def output_package_diff(package_list_new, package_list_old):
+    # Remove packages from the list where they are completely unchanged
+    trimmed_packages_new = list_subtract(package_list_new.split("\n"), package_list_old.split("\n"))
+    trimmed_packages_old = list_subtract(package_list_old.split("\n"), package_list_new.split("\n"))
+
+    # Then convert to dict for easier comparisons
+    packages_new_dict = package_list_to_dict(trimmed_packages_new)
+    packages_old_dict = package_list_to_dict(trimmed_packages_old)
+
+    # We must use a set here so it does not have any duplicated elements
+    total_keys = set(list(packages_new_dict.keys()) + list(packages_old_dict.keys()))
+
+    print("Checking package versions...")
+    newpackages = []
+    removedpackages = []
+    upgradedpackages = []
+    for key in total_keys:
+        packages_new_version = None
+        packages_old_version = None
+
+        # Check both dictionaries
+        if key in packages_new_dict:
+            packages_new_version = packages_new_dict[key]
+
+        if key in packages_old_dict:
+            packages_old_version = packages_old_dict[key]
+
+        # Check whether the package exists in the old and the new version to decide if it has been removed, added or upgraded
+        if packages_new_version is not None and packages_old_version is not None:
+            upgradedpackages.append("Upgraded: {package}: {oldversion} -> {newversion}".format(package=key, oldversion=packages_old_version, newversion=packages_old_version))
+        elif packages_old_version is None and packages_new_version is not None:
+            newpackages.append("Added: {package}: {newversion}".format(package=key, newversion=packages_new_version))
+        elif packages_new_version is None and packages_old_version is not None:
+            removedpackages.append("Removed: {package}: {oldversion}".format(package=key, oldversion=packages_old_version))
+
+    for newpackage in newpackages:
+        print(newpackage)
+
+    for upgrade in upgradedpackages:
+        print(upgrade)
+
+    for removal in removedpackages:
+        print(removal)
+
+
+# Check what args we are being run with
+diff_type = ""
+filename = sys.argv[0]
+if len(sys.argv) > 1:
+    diff_type = sys.argv[1]
+
+    # If the user uses it incorrectly, tell them
+    if len(sys.argv) > 2 or diff_type not in VALID_ARGS:
+        print_usage_and_exit(filename)
+
+# Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
+user = subprocess.check_output("whoami", shell=True).decode("UTF-8").strip("\n")
+if user != "root":
+    print("Error: must be run as root!")
+    sys.exit()
+
+# Check bootc status so we can find the verity hashes of the images
+bootc_status = json.loads(subprocess.check_output("bootc status --json", shell=True))
+images = None
+
+staged_packages = None
+booted_packages = None
+rollback_packages = None
+
+# Look for the list of images
+if STATUS in bootc_status:
+    images = bootc_status[STATUS]
+
+else:
+    invalid_format(bootc_status, STATUS)
+
+
+# We must have a booted image, otherwise composefs bootc is probably not managing the system
+if BOOTED in images and images[BOOTED] is not None and COMPOSEFS in images[BOOTED]:
+    booted_packages = get_packages(images[BOOTED][COMPOSEFS])
+
+else:
+    invalid_format(bootc_status, BOOTED)
+
+
+# Either rollback or staged deployment may not exist, so don't error if they don't
+if ROLLBACK in images and images[ROLLBACK] is not None and COMPOSEFS in images[ROLLBACK]:
+    rollback_packages = get_packages(images[ROLLBACK][COMPOSEFS])
+
+if STAGED in images and images[STAGED] is not None and COMPOSEFS in images[STAGED]:
+    staged_packages = get_packages(images[STAGED][COMPOSEFS])
+
+
+# If we didn't specify, pick based on the existence of the staged deployment
+if diff_type == "":
+    if staged_packages is not None:
+        diff_type = STAGED
+    else:
+        diff_type = ROLLBACK
+
+
+# Check the deployment we are looking for exists
+if diff_type == ROLLBACK:
+    print(f"{ROLLBACK} deployment -> {BOOTED} deployment:")
+    if rollback_packages is not None:
+        output_package_diff(booted_packages, rollback_packages)
+    else:
+        invalid_deployment(ROLLBACK)
+
+elif diff_type == STAGED:
+    print(f"{BOOTED} deployment -> {STAGED} deployment:")
+    if staged_packages is not None:
+        output_package_diff(staged_packages, booted_packages)
+    else:
+        invalid_deployment(STAGED)

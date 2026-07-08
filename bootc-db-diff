@@ -87,10 +87,14 @@ def compare_versions(version1, version2):
     try:
         v1 = packaging.version.parse(version1.replace(":", "."))
         v2 = packaging.version.parse(version2.replace(":", "."))
-        return v1 > v2
-        # Assume false if we can't read the versions
+        # 1 = first one is greater, -1 = second one is greater
+        if v1 > v2:
+            return 1
+        else:
+            return -1
+        # We don't know so say they are equal
     except packaging.version.InvalidVersion:
-        return False
+        return 0
 
 
 # Actually print out the package diff string
@@ -124,10 +128,13 @@ def output_package_diff(package_list_new, package_list_old):
         # Check whether the package exists in the old and the new version to decide if it has been removed, added or upgraded
         if packages_new_version is not None and packages_old_version is not None:
             # Assume we're upgrading a package by default
-            changed = "Upgraded"
+            changed = "Changed"
 
-            # If the old version is greater than the new version, the package has actually been downgraded
-            if compare_versions(packages_old_version, packages_new_version):
+            # If we know which version is greater, tell the user that the package has been either upgraded / downgraded rather than simply "changed"
+            change_status = compare_versions(packages_new_version, packages_old_version)
+            if change_status == 1:
+                changed = "Upgraded"
+            elif change_status == -1:
                 changed = "Downgraded"
 
             upgradedpackages.append("{changed}: {package}: {oldversion} -> {newversion}".format(changed=changed, package=key, oldversion=packages_old_version, newversion=packages_new_version))

@@ -7,6 +7,7 @@ import sys
 
 # TODO: Maybe support package manager auto detection and/or specifying using an environment variable?
 LIST_PACKAGES_COMMAND = "pacman -Q"
+ENCODING_TYPE="UTF-8"
 
 STATUS = "status"
 BOOTED = "booted"
@@ -15,7 +16,9 @@ STAGED = "staged"
 COMPOSEFS = "composefs"
 VERITY = "verity"
 
-VALID_ARGS = [ ROLLBACK, STAGED ]
+OVERLAY = "overlay"
+
+VALID_ARGS = [ ROLLBACK, STAGED, OVERLAY ]
 
 # We grab the program name this way in case I change it lol
 filename = sys.argv[0]
@@ -24,7 +27,7 @@ parser = argparse.ArgumentParser(
                     prog=program_name,
                     description="Check packages that have been upgraded/added/removed between bootc composefs deployments"
                     )
-parser.add_argument("--deployment", "-d", help="which deployment to check the diff against: rollback or staged", choices=VALID_ARGS)
+parser.add_argument("--deployment", "-d", help="which deployment to check the diff against", choices=VALID_ARGS)
 
 
 # Subtract a list from another using Counters
@@ -65,12 +68,17 @@ def get_packages(composefs_details):
         # We make the mountpoint, mount using bootc internals cfs mount, and then chroot into it to check the list of installed packages.
         subprocess.run(f"mkdir -p {staged_dir}", shell=True)
         subprocess.run(f"bootc internals cfs mount {verity} {staged_dir}", shell=True)
-        packages = subprocess.check_output(f"chroot {staged_dir} {LIST_PACKAGES_COMMAND}", stderr=subprocess.DEVNULL, shell=True).decode("UTF-8")
+        packages = subprocess.check_output(f"chroot {staged_dir} {LIST_PACKAGES_COMMAND}", stderr=subprocess.DEVNULL, shell=True).decode(ENCODING_TYPE)
         subprocess.run(f"umount {staged_dir}", shell=True)
         return packages
 
     else:
         invalid_format(composefs_details, VERITY)
+
+
+# Get local packages without chroot (for checking overlayed packages)
+def get_packages_local():
+    return subprocess.check_output(LIST_PACKAGES_COMMAND, stderr=subprocess.DEVNULL, shell=True).decode(ENCODING_TYPE)
 
 
 # Actually print out the package diff string
@@ -119,6 +127,9 @@ def output_package_diff(package_list_new, package_list_old):
     for removal in removedpackages:
         print(removal)
 
+    if len(removedpackages) == len(upgradedpackages) == len(newpackages) == 0:
+        print("No changes in package database.")
+
 
 # Check what args we are being run with
 args = parser.parse_args(sys.argv[1:])
@@ -126,7 +137,7 @@ diff_type = args.deployment
 
 
 # Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
-user = subprocess.check_output("whoami", shell=True).decode("UTF-8").strip("\n")
+user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")
 if user != "root":
     print("Error: must be run as root!")
     sys.exit()
@@ -185,3 +196,8 @@ elif diff_type == STAGED:
         output_package_diff(staged_packages, booted_packages)
     else:
         invalid_deployment(STAGED)
+
+elif diff_type == OVERLAY:
+    print(f"Package changes in {OVERLAY}:")
+    local_packages = get_packages_local()
+    output_package_diff(local_packages, booted_packages)

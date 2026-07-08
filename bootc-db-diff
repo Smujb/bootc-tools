@@ -27,7 +27,7 @@ parser = argparse.ArgumentParser(
                     prog=program_name,
                     description="Check packages that have been upgraded/added/removed between bootc composefs deployments"
                     )
-parser.add_argument("--deployment", "-d", help="which deployment to check the diff against", choices=VALID_ARGS)
+parser.add_argument("-d", "--deployment", help="which deployment to check the diff against", choices=VALID_ARGS)
 
 
 # Subtract a list from another using Counters

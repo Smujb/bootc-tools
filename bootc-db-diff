@@ -85,8 +85,8 @@ def get_packages_local():
 # Compare whether version 1 is greater than version 2
 def compare_versions(version1, version2):
     try:
-        v1 = packaging.version.parse(version1)
-        v2 = packaging.version.parse(version2)
+        v1 = packaging.version.parse(version1.replace(":", "."))
+        v2 = packaging.version.parse(version2.replace(":", "."))
         return v1 > v2
         # Assume false if we can't read the versions
     except packaging.version.InvalidVersion:

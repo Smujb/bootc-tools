@@ -98,13 +98,13 @@ def build_sysext(deployment_details, script_name):
     cleanup()
 
 
+args = parser.parse_args(sys.argv[1:])
+
 # Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
 user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")
 if user != "root":
     exit_message("Error: Must be run as root!")
 
-
-args = parser.parse_args(sys.argv[1:])
 
 # First we check the script actually exists as a valid file
 try:

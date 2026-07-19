@@ -1,0 +1,146 @@
+#!/usr/bin/env python
+import argparse
+import subprocess
+import json
+import csv
+import sys
+
+ENCODING_TYPE="UTF-8"
+
+STATUS = "status"
+BOOTED = "booted"
+ROLLBACK = "rollback"
+STAGED = "staged"
+COMPOSEFS = "composefs"
+IMAGE="image"
+VERITY = "verity"
+VERSION = "version"
+
+# /etc/os-release stuff
+OS_VERSION_ID="VERSION_ID"
+OS_ID="ID"
+
+parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
+parser.add_argument("script", help="filename of script to use")
+
+
+# Helpful function to exit with an error message without providing a full stack trace
+def exit_message(message):
+    print(message)
+    cleanup()
+    sys.exit()
+
+
+# Clean up any files and mountpoints created
+def cleanup():
+    subprocess.run("umount /tmp/overlay/merged; rm -rf /tmp/overlay", stderr=subprocess.DEVNULL, shell=True)
+
+
+# Complain about bootc status returning unexpected data
+def invalid_format(status, key):
+    exit_message("Error: Output of 'bootc status' was formatted unexpectedly - key \"{key}\" was missing. Output was:\n{status}".format(key=key, status=json.dumps(status, indent=4)))
+
+
+# Actually build the sysext
+def build_sysext(deployment_details, script_name):
+    # Make sure we have the info we need here
+    if VERITY not in deployment_details[COMPOSEFS]:
+        invalid_format(deployment_details, VERITY)
+        return
+
+    if VERSION not in deployment_details[IMAGE]:
+        invalid_format(deployment_details, VERSION)
+        return
+
+    deployment_verity = deployment_details[COMPOSEFS][VERITY]
+    deployment_version = deployment_details[IMAGE][VERSION]
+    
+    # Name the extension after the deployment version
+    ext_name = f"overlay-ext.{deployment_version}"
+    WORK_PATH="/tmp/overlay"
+
+    # Create working directories
+    subprocess.run(f"mkdir -p {WORK_PATH}/{{{ext_name},work,merged}}", shell=True)
+
+    # Mount the deployment
+    subprocess.run(f"bootc internals cfs mount {deployment_verity} {WORK_PATH}/merged --upperdir={WORK_PATH}/{ext_name} --workdir={WORK_PATH}/work --read-write", shell=True)
+
+    # Copy the script into the mountpoint and run it in a systemd-nspawn container
+    subprocess.run(f"cp {script_name} {WORK_PATH}/merged/generator.sh; chmod +x {WORK_PATH}/merged/generator.sh", shell=True)
+    subprocess.run(f"systemd-nspawn -D {WORK_PATH}/merged --resolv-conf=bind-uplink bash -c \"/generator.sh\"", shell=True)
+
+    # Remove all directories other than the /usr tree and create sysext directories
+    subprocess.run(f"cd {WORK_PATH} && find {ext_name} -mindepth 1 -maxdepth 1 ! -name \"usr\" -exec rm -rf {{}} +", shell=True)
+    subprocess.run(f"mkdir -p {WORK_PATH}/{ext_name}/usr/lib/extension-release.d/", shell=True)
+
+    # Load /etc/os-release and check it has the info we need
+    os_info = {}
+    try:
+        os_release_file = open(f"{WORK_PATH}/merged/etc/os-release", "r")
+        os_info = dict(csv.reader(os_release_file, delimiter="="))
+
+    except FileNotFoundError as e:
+        exit_message(f"Error: Could not find /etc/os-release {e}")
+
+    if OS_VERSION_ID not in os_info or OS_ID not in os_info:
+        exit_message(f"Error: /etc/os-release is missing the required flags: {OS_VERSION_ID}=, {OS_ID}=")
+
+    os_id = os_info[OS_ID]
+    os_version_id = os_info[OS_VERSION_ID]
+
+    # Write to the file 
+    with open(f"{WORK_PATH}/{ext_name}/usr/lib/extension-release.d/extension-release.{ext_name}", "w+") as extension_release:
+        extension_release.write(f'{OS_ID}="{os_id}"\n{OS_VERSION_ID}="{os_version_id}"')
+
+    # Remove a previous version of the extension then copy the new version instead
+    subprocess.run(f"rm -rf /var/lib/extensions/{ext_name}; cp -r {WORK_PATH}/{ext_name} /var/lib/extensions/; systemd-sysext refresh", shell=True)
+
+    cleanup()
+
+
+# Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
+user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")
+if user != "root":
+    exit_message("Error: Must be run as root!")
+
+
+args = parser.parse_args(sys.argv[1:])
+
+# First we check the script actually exists as a valid file
+try:
+    script_contents = open(args.script, "r").read()
+
+except FileNotFoundError:
+    exit_message(f"Error: File \"{args.script}\" could not be found.")
+
+
+# Then that bash can execute it
+try:
+    subprocess.check_output(f"bash -n {args.script}", stderr=subprocess.DEVNULL, shell=True)
+
+except subprocess.CalledProcessError:
+    exit_message(f"Error: File \"{args.script}\" is not a valid bash script - use \"bash -n {args.script}\" to validate it.")
+
+
+# Check bootc status so we can find the verity hashes of the images
+bootc_status = json.loads(subprocess.check_output("bootc status --json", shell=True))
+images = None
+
+# Look for the list of images
+if STATUS in bootc_status:
+    images = bootc_status[STATUS]
+
+else:
+    invalid_format(bootc_status, STATUS)
+
+
+# We must have a booted image, otherwise composefs bootc is probably not managing the system
+if BOOTED in images and images[BOOTED] is not None and COMPOSEFS in images[BOOTED] and IMAGE in images[BOOTED]:
+    build_sysext(images[BOOTED], args.script)
+
+else:
+    invalid_format(bootc_status, BOOTED)
+
+
+if STAGED in images and images[STAGED] is not None and COMPOSEFS in images[STAGED] and IMAGE in images[BOOTED]:
+    build_sysext(images[STAGED], args.script)

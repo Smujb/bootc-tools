@@ -27,9 +27,10 @@ WORK_PATH="/tmp/overlay"
 
 parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
 parser.add_argument("script", default=None, nargs="?", help="filename of script to use")
-parser.add_argument("-f", "--force", help="rebuild the current deployment's overlay even if it already exists.", action="store_true")
+parser.add_argument("-f", "--force", help="rebuild the current deployment's overlay even if it already exists", action="store_true")
 parser.add_argument("-c", "--clean", help=f"remove all extensions built by this script from {EXT_DEST}", action="store_true")
 
+args = parser.parse_args(sys.argv[1:])
 
 # Helpful function to exit with an error message without providing a full stack trace
 def exit_message(message):
@@ -109,7 +110,14 @@ def build_sysext(deployment_details, script_name, force=False):
     cleanup()
 
 
-args = parser.parse_args(sys.argv[1:])
+# Run the script on a specified deployment
+def build_for_deployment(images, deployment_name, error_on_no_exist=True, force=False):
+    if deployment_name in images and images[deployment_name] is not None and COMPOSEFS in images[deployment_name] and IMAGE in images[deployment_name]:
+        build_sysext(images[deployment_name], args.script, force=force)
+
+    elif error_on_no_exist:
+        invalid_format(bootc_status, deployment_name)
+
 
 # Clean up all files this script generated and exit
 if args.clean:
@@ -155,14 +163,5 @@ else:
     invalid_format(bootc_status, STATUS)
 
 
-# We must have a booted image, otherwise composefs bootc is probably not managing the system
-if BOOTED in images and images[BOOTED] is not None and COMPOSEFS in images[BOOTED] and IMAGE in images[BOOTED]:
-    build_sysext(images[BOOTED], args.script, force=args.force)
-
-else:
-    invalid_format(bootc_status, BOOTED)
-
-
-if STAGED in images and images[STAGED] is not None and COMPOSEFS in images[STAGED] and IMAGE in images[BOOTED]:
-    # Always force rebuild the staged deployment
-    build_sysext(images[STAGED], args.script, force=True)
+build_for_deployment(images, BOOTED, error_on_no_exist=True, force=args.force)
+build_for_deployment(images, STAGED, error_on_no_exist=False, force=True)

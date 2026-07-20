@@ -1,5 +1,14 @@
 # Bootc Tools
 
+## Installing
+
+Clone this repository then sym link any of the files you want to use into `/usr/local/bin` if that is writeable on your system (otherwise, anywhere on the `PATH` that is). Note: I recommend putting them somewhere on `secure_path` if you use sudo for privelige escalation as all these scripts must be run as root.
+
+```bash
+sudo ln -s $(realpath bootc-db-diff) /usr/local/bin/bootc-db-diff
+sudo ln -s $(realpath build-overlay-ext) /usr/local/bin/build-overlay-ext
+```
+
 ## bootc-db-diff
 
 ```

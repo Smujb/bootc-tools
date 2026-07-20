@@ -126,7 +126,7 @@ def build_for_deployment(images, deployment_name, error_on_no_exist=True, force=
 # Clean up all files this script generated and exit
 if args.clean:
     # Only remove extensions which are named overlay-ext.[version] so as not to mess with other sysexts the user may have
-    subprocess.run(f"systemd-sysext unmerge; find {EXT_DEST} -mindepth 1 -maxdepth 1 -name '{BASE_EXT_NAME}.*' -exec rm -rf {{}} +", shell=True)
+    subprocess.run(f"systemd-sysext unmerge; find {EXT_DEST} -mindepth 1 -maxdepth 1 -name '{BASE_EXT_NAME}.*' -exec rm -rf {{}} +; systemd-sysext merge", shell=True)
     exit_message(f"Cleaned up all generated extensions in {EXT_DEST}")
 
 # Otherwise, we need to be passed a script

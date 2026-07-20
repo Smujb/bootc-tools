@@ -4,6 +4,7 @@ import subprocess
 import json
 import csv
 import sys
+import os
 
 ENCODING_TYPE="UTF-8"
 
@@ -22,6 +23,7 @@ OS_ID="ID"
 
 parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
 parser.add_argument("script", help="filename of script to use")
+parser.add_argument("-f", "--force", help="rebuild the current deployment's overlay even if it already exists.", action="store_true")
 
 
 # Helpful function to exit with an error message without providing a full stack trace
@@ -42,7 +44,7 @@ def invalid_format(status, key):
 
 
 # Actually build the sysext
-def build_sysext(deployment_details, script_name):
+def build_sysext(deployment_details, script_name, force=False):
     # Make sure we have the info we need here
     if VERITY not in deployment_details[COMPOSEFS]:
         invalid_format(deployment_details, VERITY)
@@ -58,6 +60,12 @@ def build_sysext(deployment_details, script_name):
     # Name the extension after the deployment version
     ext_name = f"overlay-ext.{deployment_version}"
     WORK_PATH="/tmp/overlay"
+    FINAL_PATH="/var/lib/extensions/"
+
+    # If the extension has already been built on this deployment, only rebuild it if force rebuilding.
+    if os.path.isdir(f"{FINAL_PATH}/{ext_name}") and not force:
+        print(f"Skipping extension {ext_name} because it has already been built for the current deployment. Use --force to rebuild this if you want to update it.")
+        return
 
     # Create working directories
     subprocess.run(f"mkdir -p {WORK_PATH}/{{{ext_name},work,merged}}", shell=True)
@@ -93,12 +101,13 @@ def build_sysext(deployment_details, script_name):
         extension_release.write(f'{OS_ID}="{os_id}"\n{OS_VERSION_ID}="{os_version_id}"')
 
     # Remove a previous version of the extension then copy the new version instead
-    subprocess.run(f"rm -rf /var/lib/extensions/{ext_name}; cp -r {WORK_PATH}/{ext_name} /var/lib/extensions/; systemd-sysext refresh", shell=True)
+    subprocess.run(f"rm -rf {FINAL_PATH}/{ext_name}; cp -r {WORK_PATH}/{ext_name} {FINAL_PATH}; systemd-sysext refresh", shell=True)
 
     cleanup()
 
 
 args = parser.parse_args(sys.argv[1:])
+print(args.force)
 
 # Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
 user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")
@@ -136,11 +145,12 @@ else:
 
 # We must have a booted image, otherwise composefs bootc is probably not managing the system
 if BOOTED in images and images[BOOTED] is not None and COMPOSEFS in images[BOOTED] and IMAGE in images[BOOTED]:
-    build_sysext(images[BOOTED], args.script)
+    build_sysext(images[BOOTED], args.script, force=args.force)
 
 else:
     invalid_format(bootc_status, BOOTED)
 
 
 if STAGED in images and images[STAGED] is not None and COMPOSEFS in images[STAGED] and IMAGE in images[BOOTED]:
-    build_sysext(images[STAGED], args.script)
+    # Always force rebuild the staged deployment
+    build_sysext(images[STAGED], args.script, force=True)

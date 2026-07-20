@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import argparse
 import subprocess
+import tempfile
 import json
 import csv
 import sys
@@ -23,7 +24,6 @@ OS_ID="ID"
 
 BASE_EXT_NAME="overlay-ext"
 EXT_DEST="/var/lib/extensions"
-WORK_PATH="/tmp/overlay"
 
 parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
 parser.add_argument("script", default=None, nargs="?", help="filename of script to use")
@@ -35,13 +35,7 @@ args = parser.parse_args(sys.argv[1:])
 # Helpful function to exit with an error message without providing a full stack trace
 def exit_message(message):
     print(message)
-    cleanup()
     sys.exit()
-
-
-# Clean up any files and mountpoints created
-def cleanup():
-    subprocess.run(f"umount {WORK_PATH}/merged; rm -rf {WORK_PATH}", stderr=subprocess.DEVNULL, shell=True)
 
 
 # Complain about bootc status returning unexpected data
@@ -71,43 +65,53 @@ def build_sysext(deployment_details, script_name, force=False):
         print(f"Skipping extension {ext_name} because it has already been built for the current deployment. Use --force to rebuild this if you want to update it.")
         return
 
-    # Create working directories
-    subprocess.run(f"mkdir -p {WORK_PATH}/{{{ext_name},work,merged}}", shell=True)
+    # Use a randomly generated tmp directory
+    with tempfile.TemporaryDirectory() as temp_dir:
+        WORK_PATH = temp_dir
 
-    # Mount the deployment
-    subprocess.run(f"bootc internals cfs mount {deployment_verity} {WORK_PATH}/merged --upperdir={WORK_PATH}/{ext_name} --workdir={WORK_PATH}/work --read-write", shell=True)
+        # Create working directories
+        subprocess.run(f"mkdir -p {WORK_PATH}/{{{ext_name},work,merged}}", shell=True)
 
-    # Copy the script into the mountpoint and run it in a systemd-nspawn container
-    subprocess.run(f"cp {script_name} {WORK_PATH}/merged/generator.sh; chmod +x {WORK_PATH}/merged/generator.sh", shell=True)
-    subprocess.run(f"systemd-nspawn -D {WORK_PATH}/merged --resolv-conf=bind-uplink bash -c \"/generator.sh\"", shell=True)
+        # Mount the deployment
+        subprocess.run(f"bootc internals cfs mount {deployment_verity} {WORK_PATH}/merged --upperdir={WORK_PATH}/{ext_name} --workdir={WORK_PATH}/work --read-write", shell=True)
 
-    # Remove all directories other than the /usr tree and create sysext directories
-    subprocess.run(f"cd {WORK_PATH} && find {ext_name} -mindepth 1 -maxdepth 1 ! -name \"usr\" -exec rm -rf {{}} +", shell=True)
-    subprocess.run(f"mkdir -p {WORK_PATH}/{ext_name}/usr/lib/extension-release.d/", shell=True)
+        # Copy the script into the mountpoint and run it in a systemd-nspawn container
+        subprocess.run(f"cp {script_name} {WORK_PATH}/merged/generator.sh; chmod +x {WORK_PATH}/merged/generator.sh", shell=True)
+        subprocess.run(f"systemd-nspawn -D {WORK_PATH}/merged --resolv-conf=bind-uplink bash -c \"/generator.sh\"", shell=True)
 
-    # Load /etc/os-release and check it has the info we need
-    os_info = {}
-    try:
-        os_release_file = open(f"{WORK_PATH}/merged/etc/os-release", "r")
-        os_info = dict(csv.reader(os_release_file, delimiter="="))
+        # Remove all directories other than the /usr tree and create sysext directories
+        subprocess.run(f"cd {WORK_PATH} && find {ext_name} -mindepth 1 -maxdepth 1 ! -name \"usr\" -exec rm -rf {{}} +", shell=True)
+        subprocess.run(f"mkdir -p {WORK_PATH}/{ext_name}/usr/lib/extension-release.d/", shell=True)
 
-    except FileNotFoundError as e:
-        exit_message(f"Error: Could not find /etc/os-release {e}")
+        # Load /etc/os-release and check it has the info we need
+        os_info = {}
+        try:
+            with open(f"{WORK_PATH}/merged/etc/os-release", "r") as os_release_file:
+                os_info = dict(csv.reader(os_release_file, delimiter="="))
 
-    if OS_VERSION_ID not in os_info or OS_ID not in os_info:
-        exit_message(f"Error: /etc/os-release is missing the required flags: {OS_VERSION_ID}=, {OS_ID}=")
+        except FileNotFoundError:
+            pass
 
-    os_id = os_info[OS_ID]
-    os_version_id = os_info[OS_VERSION_ID]
+        # If the dict is empty, something went wrong
+        if not bool(os_info):
+            print(f"Error: Could not find /etc/os-release on the deployment {deployment_version}")
 
-    # Write to the file 
-    with open(f"{WORK_PATH}/{ext_name}/usr/lib/extension-release.d/extension-release.{ext_name}", "w+") as extension_release:
-        extension_release.write(f'{OS_ID}="{os_id}"\n{OS_VERSION_ID}="{os_version_id}"')
+        # Do not proceed if /etc/os-release is missing the flags sysexts rely on
+        elif OS_VERSION_ID not in os_info or OS_ID not in os_info:
+            print(f"Error: /etc/os-release is missing the required flags: {OS_VERSION_ID}=, {OS_ID}=")
 
-    # Remove a previous version of the extension then copy the new version instead
-    subprocess.run(f"rm -rf {EXT_DEST}/{ext_name}; cp -r {WORK_PATH}/{ext_name} {EXT_DEST}; systemd-sysext refresh", shell=True)
+        else:
+            os_id = os_info[OS_ID]
+            os_version_id = os_info[OS_VERSION_ID]
 
-    cleanup()
+            # Write to the file 
+            with open(f"{WORK_PATH}/{ext_name}/usr/lib/extension-release.d/extension-release.{ext_name}", "w+") as extension_release:
+                extension_release.write(f'{OS_ID}="{os_id}"\n{OS_VERSION_ID}="{os_version_id}"')
+
+            # Remove a previous version of the extension then copy the new version instead
+            subprocess.run(f"rm -rf {EXT_DEST}/{ext_name}; cp -r {WORK_PATH}/{ext_name} {EXT_DEST}; systemd-sysext refresh", shell=True)
+
+        subprocess.run(f"umount {WORK_PATH}/merged", shell=True)
 
 
 # Run the script on a specified deployment

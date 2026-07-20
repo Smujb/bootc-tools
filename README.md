@@ -39,7 +39,7 @@ positional arguments:
 
 options:
   -h, --help   show this help message and exit
-  -f, --force  rebuild the current deployment's overlay even if it already exists.
+  -f, --force  rebuild each deployment's overlay even if it already exists (e.g. to update it with new changes)
   -c, --clean  remove all extensions built by this script from /var/lib/extensions
 ```
 

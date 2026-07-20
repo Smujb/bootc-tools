@@ -27,7 +27,7 @@ EXT_DEST="/var/lib/extensions"
 
 parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
 parser.add_argument("script", default=None, nargs="?", help="filename of script to use")
-parser.add_argument("-f", "--force", help="rebuild the current deployment's overlay even if it already exists", action="store_true")
+parser.add_argument("-f", "--force", help="rebuild each deployment's overlay even if it already exists (e.g. to update it with new changes)", action="store_true")
 parser.add_argument("-c", "--clean", help=f"remove all extensions built by this script from {EXT_DEST}", action="store_true")
 
 args = parser.parse_args(sys.argv[1:])
@@ -62,7 +62,7 @@ def build_sysext(deployment_details, script_name, force=False):
 
     # If the extension has already been built on this deployment, only rebuild it if force rebuilding.
     if os.path.isdir(f"{EXT_DEST}/{ext_name}") and not force:
-        print(f"Skipping extension {ext_name} because it has already been built for the current deployment. Use --force to rebuild this if you want to update it.")
+        print(f"Skipping extension {ext_name} because it has already been built for the deployment {deployment_version}. Use --force to rebuild this if you want to update it.")
         return
 
     # Use a randomly generated tmp directory
@@ -168,4 +168,4 @@ else:
 
 
 build_for_deployment(images, BOOTED, error_on_no_exist=True, force=args.force)
-build_for_deployment(images, STAGED, error_on_no_exist=False, force=True)
+build_for_deployment(images, STAGED, error_on_no_exist=False, force=args.force)

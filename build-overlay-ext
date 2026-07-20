@@ -21,9 +21,14 @@ VERSION = "version"
 OS_VERSION_ID="VERSION_ID"
 OS_ID="ID"
 
+BASE_EXT_NAME="overlay-ext"
+EXT_DEST="/var/lib/extensions"
+WORK_PATH="/tmp/overlay"
+
 parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
-parser.add_argument("script", help="filename of script to use")
+parser.add_argument("script", default=None, nargs="?", help="filename of script to use")
 parser.add_argument("-f", "--force", help="rebuild the current deployment's overlay even if it already exists.", action="store_true")
+parser.add_argument("-c", "--clean", help=f"remove all extensions built by this script from {EXT_DEST}", action="store_true")
 
 
 # Helpful function to exit with an error message without providing a full stack trace
@@ -35,7 +40,7 @@ def exit_message(message):
 
 # Clean up any files and mountpoints created
 def cleanup():
-    subprocess.run("umount /tmp/overlay/merged; rm -rf /tmp/overlay", stderr=subprocess.DEVNULL, shell=True)
+    subprocess.run(f"umount {WORK_PATH}/merged; rm -rf {WORK_PATH}", stderr=subprocess.DEVNULL, shell=True)
 
 
 # Complain about bootc status returning unexpected data
@@ -58,12 +63,10 @@ def build_sysext(deployment_details, script_name, force=False):
     deployment_version = deployment_details[IMAGE][VERSION]
     
     # Name the extension after the deployment version
-    ext_name = f"overlay-ext.{deployment_version}"
-    WORK_PATH="/tmp/overlay"
-    FINAL_PATH="/var/lib/extensions/"
+    ext_name = f"{BASE_EXT_NAME}.{deployment_version}"
 
     # If the extension has already been built on this deployment, only rebuild it if force rebuilding.
-    if os.path.isdir(f"{FINAL_PATH}/{ext_name}") and not force:
+    if os.path.isdir(f"{EXT_DEST}/{ext_name}") and not force:
         print(f"Skipping extension {ext_name} because it has already been built for the current deployment. Use --force to rebuild this if you want to update it.")
         return
 
@@ -101,13 +104,22 @@ def build_sysext(deployment_details, script_name, force=False):
         extension_release.write(f'{OS_ID}="{os_id}"\n{OS_VERSION_ID}="{os_version_id}"')
 
     # Remove a previous version of the extension then copy the new version instead
-    subprocess.run(f"rm -rf {FINAL_PATH}/{ext_name}; cp -r {WORK_PATH}/{ext_name} {FINAL_PATH}; systemd-sysext refresh", shell=True)
+    subprocess.run(f"rm -rf {EXT_DEST}/{ext_name}; cp -r {WORK_PATH}/{ext_name} {EXT_DEST}; systemd-sysext refresh", shell=True)
 
     cleanup()
 
 
 args = parser.parse_args(sys.argv[1:])
-print(args.force)
+
+# Clean up all files this script generated and exit
+if args.clean:
+    # Only remove extensions which are named overlay-ext.[version] so as not to mess with other sysexts the user may have
+    subprocess.run(f"systemd-sysext unmerge; find {EXT_DEST} -mindepth 1 -maxdepth 1 -name '{BASE_EXT_NAME}.*' -exec rm -rf {{}} +", shell=True)
+    exit_message(f"Cleaned up all generated extensions in {EXT_DEST}")
+
+# Otherwise, we need to be passed a script
+if args.script is None:
+    exit_message("Error: Must pass a script to be run in order to build overlays.")
 
 # Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
 user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")

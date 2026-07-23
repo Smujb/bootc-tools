@@ -22,11 +22,12 @@ VERSION = "version"
 OS_VERSION_ID="VERSION_ID"
 OS_ID="ID"
 
+DEFAULT_SCRIPT_LOCATION="/etc/overlay-ext/build.sh"
 BASE_EXT_NAME="overlay-ext"
 EXT_DEST="/var/lib/extensions"
 
 parser = argparse.ArgumentParser(description="Build a deployment-locked sysext out of a shell script. Builds against the booted and staged deployments by default.")
-parser.add_argument("script", default=None, nargs="?", help="filename of script to use")
+parser.add_argument("script", default=DEFAULT_SCRIPT_LOCATION, nargs="?", help="filename of script to use")
 parser.add_argument("-f", "--force", help="rebuild each deployment's overlay even if it already exists (e.g. to update it with new changes)", action="store_true")
 parser.add_argument("-c", "--clean", help=f"remove all extensions built by this script from {EXT_DEST}", action="store_true")
 
@@ -128,10 +129,6 @@ if args.clean:
     # Only remove extensions which are named overlay-ext.[version] so as not to mess with other sysexts the user may have
     subprocess.run(f"systemd-sysext unmerge; find {EXT_DEST} -mindepth 1 -maxdepth 1 -name '{BASE_EXT_NAME}.*' -exec rm -rf {{}} +; systemd-sysext merge", shell=True)
     exit_message(f"Cleaned up all generated extensions in {EXT_DEST}")
-
-# Otherwise, we need to be passed a script
-if args.script is None:
-    exit_message("Error: Must pass a script to be run in order to build overlays.")
 
 # Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
 user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")

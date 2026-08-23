@@ -4,11 +4,11 @@ import packaging.version
 import argparse
 import subprocess
 import json
+import os
 import sys
 
 # TODO: Maybe support package manager auto detection and/or specifying using an environment variable?
-LIST_PACKAGES_COMMAND = "pacman -Q"
-ENCODING_TYPE="UTF-8"
+LIST_PACKAGES_COMMAND = ["pacman", "-Q"]
 
 STATUS = "status"
 BOOTED = "booted"
@@ -67,10 +67,15 @@ def get_packages(composefs_details):
         staged_dir = f"/run/media/{verity}"
 
         # We make the mountpoint, mount using bootc internals cfs mount, and then chroot into it to check the list of installed packages.
-        subprocess.run(f"mkdir -p {staged_dir}", shell=True)
-        subprocess.run(f"bootc internals cfs mount {verity} {staged_dir}", shell=True)
-        packages = subprocess.check_output(f"chroot {staged_dir} {LIST_PACKAGES_COMMAND}", stderr=subprocess.DEVNULL, shell=True).decode(ENCODING_TYPE)
-        subprocess.run(f"umount {staged_dir}", shell=True)
+        os.makedirs(staged_dir, exist_ok=True)
+        subprocess.run(["bootc", "internals", "cfs", "mount", verity, staged_dir], check=True)
+        packages = subprocess.run(
+            ["chroot", staged_dir, *LIST_PACKAGES_COMMAND],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        subprocess.run(["umount", staged_dir], check=True)
         return packages
 
     else:
@@ -79,7 +84,7 @@ def get_packages(composefs_details):
 
 # Get local packages without chroot (for checking overlayed packages)
 def get_packages_local():
-    return subprocess.check_output(LIST_PACKAGES_COMMAND, stderr=subprocess.DEVNULL, shell=True).decode(ENCODING_TYPE)
+    return subprocess.run(LIST_PACKAGES_COMMAND, check=True, capture_output=True, text=True).stdout
 
 
 # Compare whether version 1 is greater than version 2
@@ -162,14 +167,15 @@ args = parser.parse_args(sys.argv[1:])
 diff_type = args.deployment
 
 
-# Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
-user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")
-if user != "root":
+# Do not allow running by an unprivileged user as root is required for commands such as "bootc status"
+if os.geteuid() != 0:
     print("Error: must be run as root!")
     sys.exit()
 
 # Check bootc status so we can find the verity hashes of the images
-bootc_status = json.loads(subprocess.check_output("bootc status --json", shell=True))
+bootc_status = json.loads(
+    subprocess.run(["bootc", "status", "--json"], check=True, capture_output=True).stdout
+)
 images = None
 
 staged_packages = None

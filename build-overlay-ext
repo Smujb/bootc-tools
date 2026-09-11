@@ -6,8 +6,7 @@ import json
 import csv
 import sys
 import os
-
-ENCODING_TYPE="UTF-8"
+import shutil
 
 STATUS = "status"
 BOOTED = "booted"
@@ -71,18 +70,52 @@ def build_sysext(deployment_details, script_name, force=False):
         WORK_PATH = temp_dir
 
         # Create working directories
-        subprocess.run(f"mkdir -p {WORK_PATH}/{{{ext_name},work,merged}}", shell=True)
+        for directory in (ext_name, "work", "merged"):
+            os.makedirs(f"{WORK_PATH}/{directory}", exist_ok=True)
 
         # Mount the deployment
-        subprocess.run(f"bootc internals cfs mount {deployment_verity} {WORK_PATH}/merged --upperdir={WORK_PATH}/{ext_name} --workdir={WORK_PATH}/work --read-write", shell=True)
+        subprocess.run(
+            [
+                "bootc",
+                "internals",
+                "cfs",
+                "mount",
+                deployment_verity,
+                f"{WORK_PATH}/merged",
+                f"--upperdir={WORK_PATH}/{ext_name}",
+                f"--workdir={WORK_PATH}/work",
+                "--read-write",
+            ],
+            check=True,
+        )
 
         # Copy the script into the mountpoint and run it in a systemd-nspawn container
-        subprocess.run(f"cp {script_name} {WORK_PATH}/merged/generator.sh; chmod +x {WORK_PATH}/merged/generator.sh", shell=True)
-        subprocess.run(f"systemd-nspawn -D {WORK_PATH}/merged --resolv-conf=bind-uplink bash -c \"/generator.sh\"", shell=True)
+        generator_path = f"{WORK_PATH}/merged/generator.sh"
+        shutil.copy(script_name, generator_path)
+        os.chmod(generator_path, 0o700)
+        subprocess.run(
+            [
+                "systemd-nspawn",
+                "-D",
+                f"{WORK_PATH}/merged",
+                "--resolv-conf=bind-uplink",
+                "bash",
+                "-c",
+                "/generator.sh",
+            ],
+            check=True,
+        )
 
         # Remove all directories other than the /usr tree and create sysext directories
-        subprocess.run(f"cd {WORK_PATH} && find {ext_name} -mindepth 1 -maxdepth 1 ! -name \"usr\" -exec rm -rf {{}} +", shell=True)
-        subprocess.run(f"mkdir -p {WORK_PATH}/{ext_name}/usr/lib/extension-release.d/", shell=True)
+        with os.scandir(f"{WORK_PATH}/{ext_name}") as entries:
+            for entry in entries:
+                if entry.name == "usr":
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    shutil.rmtree(entry.path)
+                else:
+                    os.remove(entry.path)
+        os.makedirs(f"{WORK_PATH}/{ext_name}/usr/lib/extension-release.d", exist_ok=True)
 
         # Load /etc/os-release and check it has the info we need
         os_info = {}
@@ -110,9 +143,14 @@ def build_sysext(deployment_details, script_name, force=False):
                 extension_release.write(f'{OS_ID}="{os_id}"\n{OS_VERSION_ID}="{os_version_id}"')
 
             # Remove a previous version of the extension then copy the new version instead
-            subprocess.run(f"rm -rf {EXT_DEST}/{ext_name}; cp -r {WORK_PATH}/{ext_name} {EXT_DEST}; systemd-sysext refresh", shell=True)
+            try:
+                shutil.rmtree(f"{EXT_DEST}/{ext_name}")
+            except FileNotFoundError:
+                pass
+            shutil.copytree(f"{WORK_PATH}/{ext_name}", EXT_DEST, symlinks=True)
+            subprocess.run(["systemd-sysext", "refresh"], check=True)
 
-        subprocess.run(f"umount {WORK_PATH}/merged", shell=True)
+        subprocess.run(["umount", f"{WORK_PATH}/merged"], check=True)
 
 
 # Run the script on a specified deployment
@@ -127,12 +165,15 @@ def build_for_deployment(images, deployment_name, error_on_no_exist=True, force=
 # Clean up all files this script generated and exit
 if args.clean:
     # Only remove extensions which are named overlay-ext.[version] so as not to mess with other sysexts the user may have
-    subprocess.run(f"systemd-sysext unmerge; find {EXT_DEST} -mindepth 1 -maxdepth 1 -name '{BASE_EXT_NAME}.*' -exec rm -rf {{}} +; systemd-sysext merge", shell=True)
+    with os.scandir(EXT_DEST) as entries:
+        for entry in entries:
+            if entry.name.startswith(f"{BASE_EXT_NAME}."):
+                os.remove(entry.path)
+    subprocess.run(["systemd-sysext", "refresh"], check=True)
     exit_message(f"Cleaned up all generated extensions in {EXT_DEST}")
 
-# Do not allow running by an unpriveliged user as root is required for commands such as "bootc status"
-user = subprocess.check_output("whoami", shell=True).decode(ENCODING_TYPE).strip("\n")
-if user != "root":
+# Do not allow running by an unprivileged user as root is required for commands such as "bootc status"
+if os.geteuid() != 0:
     exit_message("Error: Must be run as root!")
 
 
@@ -146,14 +187,15 @@ except FileNotFoundError:
 
 # Then that bash can execute it
 try:
-    subprocess.check_output(f"bash -n {args.script}", stderr=subprocess.DEVNULL, shell=True)
-
+    subprocess.run(["bash", "-n", args.script], check=True, capture_output=True)
 except subprocess.CalledProcessError:
     exit_message(f"Error: File \"{args.script}\" is not a valid bash script - use \"bash -n {args.script}\" to validate it.")
 
 
 # Check bootc status so we can find the verity hashes of the images
-bootc_status = json.loads(subprocess.check_output("bootc status --json", shell=True))
+bootc_status = json.loads(
+    subprocess.run(["bootc", "status", "--json"], check=True, capture_output=True).stdout
+)
 images = None
 
 # Look for the list of images
